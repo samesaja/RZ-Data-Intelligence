@@ -17,7 +17,7 @@ import re
 import uuid
 import time
 import logging
-from urllib.parse import urlparse, parse_qs, quote_plus
+from urllib.parse import urlparse, urljoin, parse_qs, quote_plus
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -164,6 +164,71 @@ def _extract_contacts_from_page(page, source_url: str) -> dict:
         "emails": unique_emails,
         "phones": unique_phones,
     }
+
+
+# Keywords that signal a high-value contact/about subpage
+CONTACT_SUBPAGE_KEYWORDS = (
+    "contact", "kontak", "hubungi", "about", "tentang",
+    "support", "bantuan", "reach", "get-in-touch",
+)
+MAX_SUBPAGES_PER_DOMAIN = 2
+
+
+def _discover_contact_subpages(page, base_url: str) -> list[str]:
+    """
+    Scan all <a href> on a page and return internal links whose path or
+    anchor text contains contact-related keywords.
+
+    Rules:
+      - Only same-domain links (internal)
+      - Skip anchors (#), javascript:, mailto:, tel:
+      - Deduplicate by normalized URL
+      - Return at most MAX_SUBPAGES_PER_DOMAIN results
+    """
+    parsed_base = urlparse(base_url)
+    base_domain = parsed_base.netloc.lower()
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    all_links = page.css("a[href]")
+    for link_el in all_links:
+        href = link_el.attrib.get("href", "").strip()
+        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+
+        # Resolve to absolute URL
+        absolute_url = urljoin(base_url, href)
+        parsed = urlparse(absolute_url)
+
+        # Must be same domain (internal link)
+        if parsed.netloc.lower() != base_domain:
+            continue
+
+        # Normalize: strip fragment, ensure scheme
+        normalized = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        if parsed.query:
+            normalized += f"?{parsed.query}"
+
+        if normalized in seen or normalized == base_url.rstrip("/"):
+            continue
+        seen.add(normalized)
+
+        # Check path and link text for contact keywords
+        path_lower = parsed.path.lower()
+        link_text = (link_el.text or "").strip().lower()
+
+        is_contact_page = any(
+            kw in path_lower or kw in link_text
+            for kw in CONTACT_SUBPAGE_KEYWORDS
+        )
+
+        if is_contact_page:
+            candidates.append(normalized)
+            if len(candidates) >= MAX_SUBPAGES_PER_DOMAIN:
+                break
+
+    return candidates
 
 
 # ══════════════════════════════════════════════════════════════
@@ -486,7 +551,7 @@ def _process_topic_scraping(job_id: str, search_topic: str, max_results: int = 1
                 "message": "No search results found",
             }
 
-        # ── Step 2: Deep Extraction per URL ──────────────
+        # ── Step 2: Deep Extraction per URL (with subpage crawling) ──
         items_created = 0
         urls_processed = 0
         urls_failed = 0
@@ -501,16 +566,74 @@ def _process_topic_scraping(job_id: str, search_topic: str, max_results: int = 1
                 page_headers = _build_headers(target_url)
                 page = fetcher.get(target_url, timeout=20, headers=page_headers)
 
-                # Extract contacts using shared helper
+                # Extract contacts from main page
                 contacts = _extract_contacts_from_page(page, target_url)
                 page_title = contacts["title"]
-                unique_emails = contacts["emails"]
-                unique_phones = contacts["phones"]
+                all_emails = list(contacts["emails"])
+                all_phones = list(contacts["phones"])
 
                 parsed = urlparse(target_url)
                 domain = parsed.netloc
 
-                # Create primary lead with best contact info
+                # ── Deep Search: Crawl contact subpages ──────
+                subpages = _discover_contact_subpages(page, target_url)
+                subpages_crawled = 0
+
+                if subpages:
+                    logger.info(
+                        f"[Job {job_id}]   ↳ Deep search: found "
+                        f"{len(subpages)} contact subpage(s) on {domain}"
+                    )
+
+                for sub_url in subpages:
+                    try:
+                        sub_headers = _build_headers(sub_url)
+                        sub_page = fetcher.get(
+                            sub_url, timeout=20, headers=sub_headers
+                        )
+                        sub_contacts = _extract_contacts_from_page(
+                            sub_page, sub_url
+                        )
+
+                        # Merge emails (deduplicate)
+                        existing_emails_lower = {
+                            e.lower() for e in all_emails
+                        }
+                        for email in sub_contacts["emails"]:
+                            if email.lower() not in existing_emails_lower:
+                                all_emails.append(email)
+                                existing_emails_lower.add(email.lower())
+
+                        # Merge phones (deduplicate by digits)
+                        existing_phone_digits = {
+                            re.sub(r"\D", "", p) for p in all_phones
+                        }
+                        for phone in sub_contacts["phones"]:
+                            digits = re.sub(r"\D", "", phone)
+                            if digits not in existing_phone_digits:
+                                all_phones.append(phone)
+                                existing_phone_digits.add(digits)
+
+                        subpages_crawled += 1
+                        logger.info(
+                            f"[Job {job_id}]     ✓ Subpage {sub_url[:60]}: "
+                            f"+{len(sub_contacts['emails'])} emails, "
+                            f"+{len(sub_contacts['phones'])} phones"
+                        )
+                        time.sleep(0.8)  # polite delay
+
+                    except Exception as sub_exc:
+                        logger.warning(
+                            f"[Job {job_id}]     ✗ Subpage failed "
+                            f"{sub_url[:60]}: {sub_exc}"
+                        )
+                        continue
+
+                # ── Create Lead records from aggregated data ─
+                unique_emails = all_emails
+                unique_phones = all_phones
+
+                # Primary lead with best contact info
                 lead = Lead(
                     company_name=page_title,
                     industry=search_topic[:128],
@@ -522,7 +645,7 @@ def _process_topic_scraping(job_id: str, search_topic: str, max_results: int = 1
                 session.add(lead)
                 items_created += 1
 
-                # Create additional leads for extra emails found
+                # Additional leads for extra emails found
                 for email in unique_emails[1:5]:  # cap at 4 extras per page
                     lead = Lead(
                         company_name=(
@@ -542,6 +665,7 @@ def _process_topic_scraping(job_id: str, search_topic: str, max_results: int = 1
                     f"[Job {job_id}]   ✓ {domain}: "
                     f"{len(unique_emails)} emails, "
                     f"{len(unique_phones)} phones"
+                    f" (deep: {subpages_crawled} subpages)"
                 )
 
             except Exception as page_exc:
