@@ -1,0 +1,158 @@
+# ═══════════════════════════════════════════════════════════════
+# RZ Data Intelligence — Docker Compose Orchestration
+# Production-like environment: 5 services on a custom bridge network
+# No reverse proxy — backend and frontend exposed on localhost only
+# ═══════════════════════════════════════════════════════════════
+
+services:
+  # ── PostgreSQL 16 ──────────────────────────────────────────
+  # NO PORTS EXPOSED — internal to rz_network only
+  postgres:
+    image: postgres:16-alpine
+    container_name: rz-postgres
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    command: >
+      postgres
+        -c shared_buffers=256MB
+        -c effective_cache_size=512MB
+        -c work_mem=4MB
+        -c maintenance_work_mem=64MB
+        -c max_connections=100
+        -c log_min_duration_statement=1000
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - rz_network
+
+  # ── Redis 7 ────────────────────────────────────────────────
+  # NO PORTS EXPOSED — internal to rz_network only
+  redis:
+    image: redis:7-alpine
+    container_name: rz-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+        --maxmemory 128mb
+        --maxmemory-policy allkeys-lru
+        --appendonly yes
+        --save 60 1000
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - rz_network
+
+  # ── FastAPI Backend ────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rz-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL_SYNC: ${DATABASE_URL_SYNC}
+      REDIS_URL: ${REDIS_URL}
+      SECRET_KEY: ${SECRET_KEY}
+      DEBUG: ${DEBUG:-false}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      uvicorn app.main:app
+        --host 0.0.0.0
+        --port 8000
+        --workers 2
+        --loop uvloop
+        --http httptools
+        --access-log
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - rz_network
+
+  # ── Celery Worker (Scrapling Tasks) ────────────────────────
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rz-celery-worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL_SYNC: ${DATABASE_URL_SYNC}
+      REDIS_URL: ${REDIS_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      celery -A app.worker.celery_app worker
+        --loglevel=info
+        --concurrency=2
+        --max-tasks-per-child=50
+        --without-heartbeat
+    stop_grace_period: 60s
+    networks:
+      - rz_network
+
+  # ── Next.js Frontend ───────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
+    container_name: rz-frontend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - rz_network
+
+# ── Named Volumes ──────────────────────────────────────────
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+# ── Custom Bridge Network ──────────────────────────────────
+networks:
+  rz_network:
+    driver: bridge
+    name: rz_network
