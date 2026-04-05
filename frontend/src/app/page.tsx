@@ -1,6 +1,8 @@
 "use client";
 
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@/lib/AuthProvider";
 import Header from "./components/Header";
 import StatsCards from "./components/StatsCards";
 import ScrapeForm from "./components/ScrapeForm";
@@ -8,6 +10,9 @@ import LeadsTable from "./components/LeadsTable";
 import JobsTable from "./components/JobsTable";
 
 export default function DashboardPage() {
+  const router = useRouter();
+  const { user, isLoading: authLoading } = useAuth();
+
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [totalLeads, setTotalLeads] = useState(0);
   const [currentIndustry, setCurrentIndustry] = useState("");
@@ -17,6 +22,13 @@ export default function DashboardPage() {
   const [activeJobs, setActiveJobs] = useState(0);
   const [completedJobs, setCompletedJobs] = useState(0);
   const [failedJobs, setFailedJobs] = useState(0);
+
+  // ── Auth Guard ────────────────────────────────────
+  useEffect(() => {
+    if (!authLoading && !user) {
+      router.replace("/auth");
+    }
+  }, [user, authLoading, router]);
 
   const handleJobComplete = () => {
     setRefreshTrigger((prev) => prev + 1);
@@ -39,6 +51,21 @@ export default function DashboardPage() {
     },
     []
   );
+
+  // Loading state while checking auth
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-8 w-8 rounded-full border-2 border-indigo border-t-transparent animate-spin" />
+          <p className="text-xs text-text-dim">Loading…</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Not authenticated — redirect in progress
+  if (!user) return null;
 
   return (
     <div className="min-h-screen bg-background">
