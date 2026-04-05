@@ -83,6 +83,28 @@ export async function clearAllLeads(): Promise<{ message: string }> {
   return res.json();
 }
 
+export async function deepSearchLead(
+  id: string
+): Promise<{ message: string; lead_id: string }> {
+  const res = await fetch(`${API_BASE_URL}/api/leads/${id}/deepsearch`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`Deep search failed: ${res.statusText}`);
+  return res.json();
+}
+
+export async function deepSearchAllLeads(): Promise<{
+  message: string;
+  total_leads: number;
+  dispatched: number;
+}> {
+  const res = await fetch(`${API_BASE_URL}/api/leads/deepsearch-all`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`Deep search failed: ${res.statusText}`);
+  return res.json();
+}
+
 // ── Jobs API ───────────────────────────────────────────────
 
 export async function fetchJobs(params?: {

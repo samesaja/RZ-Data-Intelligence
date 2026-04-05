@@ -749,3 +749,184 @@ def scrape_topic(self, job_id: str, search_topic: str, max_results: int = 10):
             f"retrying ({self.request.retries}/{self.max_retries}): {exc}"
         )
         raise self.retry(exc=exc)
+
+
+# ══════════════════════════════════════════════════════════════
+# TASK 3: On-Demand Deep Search for a Single Lead
+# ══════════════════════════════════════════════════════════════
+
+@celery_app.task(
+    name="deep_search_lead_task",
+    bind=True,
+    max_retries=1,
+    default_retry_delay=30,
+)
+def deep_search_lead(self, lead_id: str):
+    """
+    On-demand deep search for a single Lead record.
+
+    Steps:
+      1. Load the Lead from the database by UUID.
+      2. Fetch the lead's website using Scrapling.
+      3. Extract emails/phones from the main page.
+      4. Discover high-value subpages (contact, about, etc.).
+      5. Crawl up to 2 subpages and extract additional contacts.
+      6. Merge new emails/phones with existing data (no duplicates).
+      7. Update the Lead record in the database.
+    """
+    session = SyncSession()
+    try:
+        lead = session.query(Lead).filter(
+            Lead.id == uuid.UUID(lead_id)
+        ).first()
+
+        if not lead:
+            logger.warning(f"[DeepSearch] Lead {lead_id} not found")
+            return {"status": "error", "message": "Lead not found"}
+
+        target_url = lead.website or lead.source_url
+        if not target_url or not target_url.startswith("http"):
+            logger.info(
+                f"[DeepSearch] Lead {lead_id} has no valid URL, skipping"
+            )
+            return {"status": "skipped", "message": "No valid URL"}
+
+        logger.info(
+            f"[DeepSearch] Starting deep search for lead "
+            f"{lead_id} → {target_url[:80]}"
+        )
+
+        from scrapling import Fetcher
+        fetcher = Fetcher(auto_match=False)
+
+        # ── Fetch main page ────────────────────────────
+        headers = _build_headers(target_url)
+        page = fetcher.get(target_url, timeout=25, headers=headers)
+
+        contacts = _extract_contacts_from_page(page, target_url)
+        all_emails = list(contacts["emails"])
+        all_phones = list(contacts["phones"])
+
+        # ── Discover and crawl subpages ────────────────
+        subpages = _discover_contact_subpages(page, target_url)
+        subpages_crawled = 0
+
+        for sub_url in subpages:
+            try:
+                sub_headers = _build_headers(sub_url)
+                sub_page = fetcher.get(
+                    sub_url, timeout=20, headers=sub_headers
+                )
+                sub_contacts = _extract_contacts_from_page(sub_page, sub_url)
+
+                # Merge emails (deduplicate)
+                existing_lower = {e.lower() for e in all_emails}
+                for email in sub_contacts["emails"]:
+                    if email.lower() not in existing_lower:
+                        all_emails.append(email)
+                        existing_lower.add(email.lower())
+
+                # Merge phones (deduplicate by digits)
+                existing_digits = {
+                    re.sub(r"\D", "", p) for p in all_phones
+                }
+                for phone in sub_contacts["phones"]:
+                    digits = re.sub(r"\D", "", phone)
+                    if digits not in existing_digits:
+                        all_phones.append(phone)
+                        existing_digits.add(digits)
+
+                subpages_crawled += 1
+                logger.info(
+                    f"[DeepSearch]   ✓ Subpage {sub_url[:60]}: "
+                    f"+{len(sub_contacts['emails'])} emails, "
+                    f"+{len(sub_contacts['phones'])} phones"
+                )
+                time.sleep(0.8)
+
+            except Exception as sub_exc:
+                logger.warning(
+                    f"[DeepSearch]   ✗ Subpage failed "
+                    f"{sub_url[:60]}: {sub_exc}"
+                )
+                continue
+
+        # ── Merge with existing lead data ──────────────
+        updated = False
+
+        # Merge email: keep existing or upgrade to first found
+        if all_emails:
+            existing_email = (lead.email or "").lower()
+            # Build combined unique list starting with current
+            combined_emails = []
+            if lead.email:
+                combined_emails.append(lead.email)
+            seen_lower = {existing_email} if existing_email else set()
+            for e in all_emails:
+                if e.lower() not in seen_lower:
+                    combined_emails.append(e)
+                    seen_lower.add(e.lower())
+            # Store best email (first one) + extras as comma-separated
+            if combined_emails:
+                new_email = combined_emails[0]
+                if new_email != lead.email:
+                    lead.email = new_email
+                    updated = True
+                # If multiple emails found, store extras in address field
+                if len(combined_emails) > 1 and not lead.address:
+                    lead.address = (
+                        "Emails: " + ", ".join(combined_emails[1:])
+                    )
+                    updated = True
+
+        # Merge phone: keep existing or upgrade to first found
+        if all_phones:
+            existing_phone_digits = (
+                re.sub(r"\D", "", lead.phone) if lead.phone else ""
+            )
+            combined_phones = []
+            if lead.phone:
+                combined_phones.append(lead.phone)
+            seen_digits = (
+                {existing_phone_digits} if existing_phone_digits else set()
+            )
+            for p in all_phones:
+                d = re.sub(r"\D", "", p)
+                if d not in seen_digits:
+                    combined_phones.append(p)
+                    seen_digits.add(d)
+            if combined_phones:
+                new_phone = combined_phones[0]
+                if new_phone != lead.phone:
+                    lead.phone = new_phone
+                    updated = True
+
+        if updated:
+            session.commit()
+            logger.info(
+                f"[DeepSearch] ✓ Lead {lead_id} updated: "
+                f"{len(all_emails)} emails, {len(all_phones)} phones "
+                f"({subpages_crawled} subpages crawled)"
+            )
+        else:
+            logger.info(
+                f"[DeepSearch] Lead {lead_id}: no new contacts found "
+                f"({subpages_crawled} subpages crawled)"
+            )
+
+        return {
+            "status": "completed",
+            "lead_id": lead_id,
+            "emails_found": len(all_emails),
+            "phones_found": len(all_phones),
+            "subpages_crawled": subpages_crawled,
+            "updated": updated,
+        }
+
+    except Exception as exc:
+        session.rollback()
+        logger.exception(f"[DeepSearch] Failed for lead {lead_id}: {exc}")
+        raise self.retry(exc=exc)
+
+    finally:
+        session.close()

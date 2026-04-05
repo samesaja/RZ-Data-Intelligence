@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
-import { fetchLeads, deleteLead, clearAllLeads, getExportUrl, type Lead } from "@/lib/api";
+import { fetchLeads, deleteLead, clearAllLeads, deepSearchLead, deepSearchAllLeads, getExportUrl, type Lead } from "@/lib/api";
 
 /**
  * LeadsTable.tsx — High-density data table for Lead model
@@ -47,6 +47,8 @@ export default function LeadsTable({ refreshTrigger, onStatsChange }: LeadsTable
   const [searchInput, setSearchInput] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [deepSearchingIds, setDeepSearchingIds] = useState<Set<string>>(new Set());
+  const [isDeepSearchingAll, setIsDeepSearchingAll] = useState(false);
 
   const loadLeads = useCallback(async () => {
     setIsLoading(true);
@@ -105,6 +107,39 @@ export default function LeadsTable({ refreshTrigger, onStatsChange }: LeadsTable
     }
   };
 
+  const handleDeepSearch = async (id: string) => {
+    setDeepSearchingIds((prev) => new Set(prev).add(id));
+    try {
+      await deepSearchLead(id);
+      // Refresh after a short delay to let the task start
+      setTimeout(() => loadLeads(), 3000);
+    } catch {
+      alert("Failed to start deep search");
+    } finally {
+      setTimeout(() => {
+        setDeepSearchingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }, 5000);
+    }
+  };
+
+  const handleDeepSearchAll = async () => {
+    if (!confirm(`Run deep search on all ${total} leads? This will scan contact/about pages for each lead in the background.`)) return;
+    setIsDeepSearchingAll(true);
+    try {
+      const result = await deepSearchAllLeads();
+      alert(`${result.message}. Results will appear shortly.`);
+      setTimeout(() => loadLeads(), 5000);
+    } catch {
+      alert("Failed to start deep search");
+    } finally {
+      setTimeout(() => setIsDeepSearchingAll(false), 8000);
+    }
+  };
+
   const totalPages = Math.ceil(total / pageSize);
 
   const formatDate = (iso: string) => {
@@ -137,6 +172,23 @@ export default function LeadsTable({ refreshTrigger, onStatsChange }: LeadsTable
               <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
             </svg>
             Clear All
+          </button>
+          <button
+            id="deep-search-all-btn"
+            onClick={handleDeepSearchAll}
+            disabled={total === 0 || isDeepSearchingAll}
+            className="btn-ghost text-xs text-cyan border border-cyan/20 hover:bg-cyan-dim hover:text-cyan disabled:opacity-30"
+          >
+            {isDeepSearchingAll ? (
+              <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round" />
+              </svg>
+            ) : (
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 3.75H6A2.25 2.25 0 0 0 3.75 6v1.5M16.5 3.75H18A2.25 2.25 0 0 1 20.25 6v1.5m0 9V18A2.25 2.25 0 0 1 18 20.25h-1.5m-9 0H6A2.25 2.25 0 0 1 3.75 18v-1.5M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+              </svg>
+            )}
+            {isDeepSearchingAll ? "Searching..." : "Deep Search All"}
           </button>
           <button
             id="export-csv-btn"
@@ -332,15 +384,33 @@ export default function LeadsTable({ refreshTrigger, onStatsChange }: LeadsTable
 
                     {/* Actions */}
                     <td className="text-center">
-                      <button
-                        onClick={() => handleDelete(lead.id)}
-                        className="inline-flex items-center justify-center rounded p-1 text-text-dim hover:bg-red-dim hover:text-red transition-colors"
-                        title="Delete lead"
-                      >
-                        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
-                        </svg>
-                      </button>
+                      <div className="flex items-center justify-center gap-0.5">
+                        <button
+                          onClick={() => handleDeepSearch(lead.id)}
+                          disabled={deepSearchingIds.has(lead.id) || !lead.website}
+                          className="inline-flex items-center justify-center rounded p-1 text-text-dim hover:bg-cyan-dim hover:text-cyan transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                          title={lead.website ? "Deep Search — Scan subpages for contacts" : "No website URL"}
+                        >
+                          {deepSearchingIds.has(lead.id) ? (
+                            <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round" />
+                            </svg>
+                          ) : (
+                            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 3.75H6A2.25 2.25 0 0 0 3.75 6v1.5M16.5 3.75H18A2.25 2.25 0 0 1 20.25 6v1.5m0 9V18A2.25 2.25 0 0 1 18 20.25h-1.5m-9 0H6A2.25 2.25 0 0 1 3.75 18v-1.5M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+                            </svg>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => handleDelete(lead.id)}
+                          className="inline-flex items-center justify-center rounded p-1 text-text-dim hover:bg-red-dim hover:text-red transition-colors"
+                          title="Delete lead"
+                        >
+                          <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+                          </svg>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))

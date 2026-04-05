@@ -193,6 +193,61 @@ async def clear_all_leads(db: AsyncSession = Depends(get_db)):
     return {"message": f"All leads cleared ({deleted_count} records deleted)"}
 
 
+# ── Deep Search: Single Lead ─────────────────────────────
+
+@router.post("/{lead_id}/deepsearch")
+async def deep_search_lead(lead_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """
+    Trigger an on-demand deep search for a single lead.
+
+    Dispatches a background Celery task that crawls the lead's website
+    and its contact/about subpages to discover additional emails and phones.
+    """
+    result = await db.execute(select(Lead).where(Lead.id == lead_id))
+    lead = result.scalar_one_or_none()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    from app.worker.tasks import deep_search_lead as deep_search_task
+    deep_search_task.delay(str(lead_id))
+
+    logger.info(f"Deep search dispatched for lead {lead_id}")
+    return {
+        "message": f"Deep search started for '{lead.company_name}'",
+        "lead_id": str(lead_id),
+    }
+
+
+# ── Deep Search: All Leads ───────────────────────────────
+
+@router.post("/deepsearch-all")
+async def deep_search_all_leads(db: AsyncSession = Depends(get_db)):
+    """
+    Trigger deep search for ALL leads in the database.
+
+    Dispatches a Celery task for each lead that has a valid website URL.
+    Returns immediately with a count of tasks dispatched.
+    """
+    result = await db.execute(select(Lead))
+    leads = result.scalars().all()
+
+    from app.worker.tasks import deep_search_lead as deep_search_task
+
+    dispatched = 0
+    for lead in leads:
+        url = lead.website or lead.source_url
+        if url and url.startswith("http"):
+            deep_search_task.delay(str(lead.id))
+            dispatched += 1
+
+    logger.info(f"Deep search dispatched for {dispatched}/{len(leads)} leads")
+    return {
+        "message": f"Deep search started for {dispatched} leads",
+        "total_leads": len(leads),
+        "dispatched": dispatched,
+    }
+
+
 # ── Delete Lead ──────────────────────────────────────────
 
 @router.delete("/{lead_id}", status_code=204)

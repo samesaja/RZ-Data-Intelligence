@@ -174,7 +174,7 @@ export default function ScrapeForm({
       </div>
 
       {/* ── Mode Toggle ─────────────────────────────────── */}
-      <div className="mb-3.5 flex gap-1 rounded-lg bg-[var(--surface-container-lowest)] p-0.5 w-fit">
+      <div className="mb-3.5 flex gap-1 rounded-lg bg-(--surface-container-lowest) p-0.5 w-fit">
         {(["url", "topic"] as ScrapeMode[]).map((m) => (
           <button
             key={m}
@@ -188,10 +188,10 @@ export default function ScrapeForm({
               disabled:opacity-40 disabled:cursor-not-allowed
               ${
                 mode === m
-                  ? `bg-[var(--surface-container-high)] text-text-primary
+                  ? `bg-surface-high text-text-primary
                      shadow-[0_1px_3px_rgba(0,0,0,0.3),inset_0_1px_0_rgba(255,255,255,0.04)]`
                   : `text-text-dim hover:text-text-muted
-                     hover:bg-[var(--surface-container-low)]`
+                     hover:bg-surface-low`
               }
             `}
           >
@@ -318,7 +318,7 @@ export default function ScrapeForm({
                   setCustomMaxInput("");
                 }}
                 className={`
-                  h-7 min-w-[2.25rem] rounded-md px-2 text-[0.6875rem] font-medium
+                  h-7 min-w-9 rounded-md px-2 text-[0.6875rem] font-medium
                   transition-all duration-150 tabular-nums
                   disabled:opacity-30 disabled:cursor-not-allowed
                   ${!isCustomMax && maxResults === preset
