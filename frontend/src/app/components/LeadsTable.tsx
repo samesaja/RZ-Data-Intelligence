@@ -360,20 +360,32 @@ export default function LeadsTable({ refreshTrigger, onStatsChange }: LeadsTable
                       ) : <span className="text-text-dim">—</span>}
                     </td>
 
-                    {/* source_url → icon link */}
+                    {/* source_url → icon link or topic badge */}
                     <td className="hidden xl:table-cell text-center">
                       {lead.source_url ? (
-                        <a
-                          href={lead.source_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="tooltip-trigger inline-flex items-center justify-center rounded p-1 text-text-muted hover:text-amber hover:bg-amber-dim transition-colors"
-                          data-tooltip="Source"
-                        >
-                          <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244" />
-                          </svg>
-                        </a>
+                        lead.source_url.startsWith("http") ? (
+                          <a
+                            href={lead.source_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="tooltip-trigger inline-flex items-center justify-center rounded p-1 text-text-muted hover:text-amber hover:bg-amber-dim transition-colors"
+                            data-tooltip="Source"
+                          >
+                            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244" />
+                            </svg>
+                          </a>
+                        ) : (
+                          <span
+                            className="tooltip-trigger inline-flex items-center justify-center rounded p-1 text-text-dim"
+                            data-tooltip={lead.source_url}
+                            title={lead.source_url}
+                          >
+                            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
+                            </svg>
+                          </span>
+                        )
                       ) : <span className="text-text-dim">—</span>}
                     </td>
 
